@@ -8,8 +8,10 @@ One part "learn golang" one part "do a cool thing for the league", this project 
 
 1. Download Visual Studio Code
 2. Grab the code here.
-3. Create two folders in the root of this project: out & out-perf
-4. Run main.go
+3. (Probably a bunch of golang stuff here that I learned on the fly)
+4. Create a secrets file to allow you to use the Google sheets API (TODO: I need to write instructions for this)
+5. Create two folders in the root of this project: out & out-perf
+6. Run main.go
 
 ## How to contribute
 

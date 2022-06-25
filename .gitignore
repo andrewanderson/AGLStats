@@ -1,0 +1,7 @@
+.vscode
+**/archive
+/out
+/out-perf
+/db
+*.exe
+asl-pools-*.json
