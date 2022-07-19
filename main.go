@@ -48,6 +48,7 @@ const googleApiSecretFile = "D:\\Code\\PoolParser\\asl-pools-859d88f87aef.json"
 const sealedDeckApiUriTemplate string = "https://sealeddeck.tech/api/pools/%s"
 const sealedDeckPauseMs = 100                                                       // be a good citizen
 const scryfallCardTemplate string = "https://api.scryfall.com/cards/named?exact=%s" // lookup for an exact card = sub in +'s for spaces
+const scryfallSetClauseTemplate string = "&set=%s"                                  // append on to scryfallCardTemplate when needed
 const scryfallPauseMs = 75                                                          // be a good citizen
 const seventeenLandsTemplate string = "https://www.17lands.com/card_ratings/data?expansion=%s&format=%s&start_date=2019-01-01&end_date=%s&colors=%s"
 const seventeenLandsPauseMs = 1000
@@ -61,18 +62,18 @@ const perfOutputPath = "D:\\Code\\PoolParser\\out-perf"
 const debugging17Lands = false
 
 // League-specific constants
-const leagueSheetID string = "1zj-bT012MA0Zz5qECUJ0uiEOSXB4ycXiuNgVH4Qa19I"
+const leagueSheetID string = "1cNoZe15TjOgmtTsbH1R3nX_YU9Q9E224bjVUEV0haDk"
 const poolLinkRange string = "Pools!A7:H67"
 const sheetPlayerColumnIndex = 0
 const sheetWinColumnIndex = 2
 const sheetLossColumnIndex = 3
 const sheetLinkColumnIndex = 4
-const leagueEliminationLosses = 6
+const leagueEliminationLosses = 11
 const deckStrengthCardsToConsider = 60
 
 // We want to track a stat for fun.  Here are some lists that we're using
 var bombList map[string]DeckSlot
-var bombSealedDeckId = fmt.Sprintf(sealedDeckApiUriTemplate, "ufoHAzZ9Q9")
+var bombSealedDeckId = fmt.Sprintf(sealedDeckApiUriTemplate, "PSYLhA4Tit") //Hdw62MnDDd
 var dudList map[string]DeckSlot
 var dudSealedDeckId = fmt.Sprintf(sealedDeckApiUriTemplate, "Ga4qDQMx6I")
 var topCommonList map[string]DeckSlot
@@ -81,11 +82,11 @@ var topCommonDeckId = fmt.Sprintf(sealedDeckApiUriTemplate, "fKAvpTdSeX")
 // Perf data variables for deck strength calculations
 var mtg2CDecks = []string{"WU", "WB", "WR", "WG", "UB", "UR", "UG", "BR", "BG", "RG"}
 var mtg3CDecks = []string{"WUB", "WUR", "WUG", "BRW", "GWB", "WRG", "UBR", "UBG", "RGU", "BRG"}
-var allSeventeenLandsSets = []string{"DOM", "M19", "RNA", "GRN", "WAR", "M20", "ELD", "THB", "IKO", "M21", "AKR", "ZNR", "KLR", "KHM", "STX", "AFR", "MID", "VOW", "NEO", "SNC"} // keep ordered by release
+var allSeventeenLandsSets = []string{"DOM", "M19", "RNA", "GRN", "WAR", "M20", "ELD", "THB", "IKO", "M21", "AKR", "ZNR", "KLR", "KHM", "STX", "AFR", "MID", "VOW", "NEO", "SNC", "HBG"} // keep ordered by release
 var seventeenLands3CSets = map[string]struct{}{"SNC": {}}
-var currentSet = "ELD"
-var setPerformanceFormat = "QuickDraft" //"PremierDraft"
-var leagueIsMonoSet = true              // Should we bother looking up other sets?
+var currentSet = "HBG"
+var setPerformanceFormat = "PremierDraft"
+var leagueIsMonoSet = false // Should we bother looking up other sets?
 var setsInPools map[string]int = make(map[string]int)
 
 func main() {
@@ -129,7 +130,7 @@ func main() {
 	processFunFacts(db, allPools)
 
 	// Oh, and for bonus points dump out the day's performance data for the current set
-	dumpPerfromanceData(db, currentSet)
+	//dumpPerfromanceData(db, currentSet)
 }
 
 // Open the Google sheet and scrape out the list of pool links from the specific range they live in.
@@ -295,6 +296,11 @@ func getCard(db *badger.DB, cardName string) (resultCard *ScryfallCard, err erro
 	cardJson := ""
 	card := new(ScryfallCard)
 
+	// Remove the Alchemy designation from cards
+	if strings.HasPrefix(cardName, "A-") {
+		cardName = strings.Trim(cardName, "A-")
+	}
+
 	// First try to get the card from the database
 	cardJson, err = dbGet(db, cardName)
 	if err != nil {
@@ -317,9 +323,18 @@ func getCard(db *badger.DB, cardName string) (resultCard *ScryfallCard, err erro
 func scryfallGet(cardName string) (resultJson string, err error) {
 	fmt.Println("Fetching card from Scryfall: ", cardName)
 
-	var uri string = fmt.Sprintf(scryfallCardTemplate, url.QueryEscape(cardName))
-	rawJson, err := getWebResponseString(uri)
-	checkError(err) // TODO: Do we pancake the entire program if we can't get the details here?!?  Right now we do.....
+	// We have a baseUri which fetches the card from whichever set scryfall fancies, and then a setUri that gets the card from the current set.
+	// We want to try the current set to get the specifics for a card, and if that fails, fallback to the base uri.
+	var baseUri string = fmt.Sprintf(scryfallCardTemplate, url.QueryEscape(cardName))
+	var setUri string = baseUri + fmt.Sprintf(scryfallSetClauseTemplate, url.QueryEscape(currentSet))
+
+	var rawJson string = ""
+	rawJson, err = getWebResponseString(setUri)
+	if err != nil {
+		rawJson, err = getWebResponseString(baseUri)
+	} else {
+		fmt.Println(err)
+	}
 
 	// And then wait for a few ms to be a good citizen
 	time.Sleep(scryfallPauseMs * time.Millisecond)
@@ -328,8 +343,6 @@ func scryfallGet(cardName string) (resultJson string, err error) {
 }
 
 // Load all deck card performance data for all decks
-//
-// Note for the future:  Three colour sets need special processing
 func loadCardPerformanceData(db *badger.DB) map[string]map[string]float64 {
 
 	var cpByDeck = make(map[string]map[string]float64)
@@ -343,7 +356,11 @@ func loadCardPerformanceData(db *badger.DB) map[string]map[string]float64 {
 			// Note: If a specific card is in multiple sets, we grab the latest
 			for _, deckId := range getDecks(setCode) {
 				cp, err := getCardPerformanceData(db, setCode, deckId, false)
-				checkError(err)
+				
+				// Shoot - we couldn't get perf data for this card.  Skip it for now?
+				if err != nil {
+					continue
+				}
 
 				// Extract the GIH_WR
 				var gihByCard = make(map[string]float64)
@@ -402,7 +419,9 @@ func seventeenLandsGet(setCode string, deckId string) (resultJson string, err er
 	var uri string = fmt.Sprintf(seventeenLandsTemplate, setCode, setPerformanceFormat, todayString, deckId)
 	//var uri string = fmt.Sprintf(seventeenLandsTemplate, setCode, deckId)
 	rawJson, err := getWebResponseString(uri)
-	checkError(err) // TODO: Do we pancake the entire program if we can't get the details here?!?  Right now we do.....
+	if err != nil {
+		fmt.Println(err)
+	}
 
 	// And then wait for a few ms to be a good citizen
 	time.Sleep(seventeenLandsPauseMs * time.Millisecond)
@@ -427,12 +446,12 @@ func processFunFacts(db *badger.DB, pools []PlayerPool) {
 	checkError(err)
 	writer := bufio.NewWriter(outputFile)
 
-	writer.WriteString("Player,Team,IsAlive,Record,Bombs,Duds,TopCommons,W,U,B,R,G,Gold,Colourless,Cmc,NonBasicLand,Dwarves,Playsets,UniqueCards,CostUSD,Strength\n")
+	writer.WriteString("Player,Team,IsAlive,Record,Bombs,Duds,TopCommons,W,U,B,R,G,Gold,Colourless,Cmc,NonBasicLand,Commanders,Playsets,UniqueCards,CostUSD,Strength\n")
 	for _, p := range pools {
 		ff := p.facts
 		writer.WriteString(fmt.Sprintf("%s,%s,%t,%s,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d\n",
 			p.player, p.team, p.isAlive, p.record, ff["bombs"], ff["duds"], ff["topcommons"], ff["white"], ff["blue"], ff["black"], ff["red"], ff["green"], ff["gold"], ff["colourless"],
-			ff["cmc"], ff["nonbasicland"], ff["dwarves"], ff["playsets"], ff["uniqueCards"], ff["costUSD"], ff["strength"]))
+			ff["cmc"], ff["nonbasicland"], ff["commanders"], ff["playsets"], ff["uniqueCards"], ff["costUSD"], ff["strength"]))
 	}
 	writer.Flush()
 }
@@ -469,7 +488,7 @@ func (pool *PlayerPool) addFacts(cardStrengthByDeck map[string]map[string]float6
 	var uniqueCards = 0
 
 	// League-specific
-	var dwarves = 0
+	var commanders = 0
 
 	// Drop the basic lands (and command towers) and gather facts about the cards in the pool.
 	for _, card := range pool.cards {
@@ -534,9 +553,9 @@ func (pool *PlayerPool) addFacts(cardStrengthByDeck map[string]map[string]float6
 			// Total mana value of the pool
 			cmc += float64(card.amount) * card.card.Cmc
 
-			// Feature card: Seven Dwarves
-			if card.cardName == "Seven Dwarves" {
-				dwarves += card.amount
+			// Commanders are legendary creatures
+			if card.isCardType("Legendary Creature") {
+				commanders += 1 // card.amount  (don't count multiples)
 			}
 
 		}
@@ -558,7 +577,7 @@ func (pool *PlayerPool) addFacts(cardStrengthByDeck map[string]map[string]float6
 	pool.facts["colourless"] = colourless
 	pool.facts["cmc"] = int(math.Round(cmc))
 	pool.facts["nonbasicland"] = nonBasicLand
-	pool.facts["dwarves"] = dwarves
+	pool.facts["commanders"] = commanders
 	pool.facts["playsets"] = playsets
 	pool.facts["uniqueCards"] = uniqueCards
 	pool.facts["costUSD"] = int(math.Round(costUSD))
@@ -772,7 +791,7 @@ func makePool(player string, team string, uri string, wins int, losses int) Play
 	var lastSlash = strings.LastIndex(poolLink, "/")
 	var poolId = poolLink[lastSlash+1:]
 	var poolUri string = fmt.Sprintf(sealedDeckApiUriTemplate, poolId)
-	var record string = fmt.Sprintf("%d - %d", wins, losses)
+	var record string = fmt.Sprintf("%d | %d", wins, losses)
 
 	return PlayerPool{player: player, team: team, uri: poolUri, isAlive: isAlive, record: record, facts: make(map[string]int)}
 }
@@ -824,7 +843,8 @@ func getWebResponseString(uri string) (rawResult string, err error) {
 
 	// Try to hit the uri, and retry if an error code comes back.
 	for i := 0; i < webRetires; i++ {
-		r, err := innerGetWebResponseString(uri)
+		var r string = ""
+		r, err = innerGetWebResponseString(uri)
 		if err == nil {
 			return r, err
 		}
@@ -843,7 +863,6 @@ func innerGetWebResponseString(uri string) (rawResult string, err error) {
 	checkError(err)
 
 	if resp.StatusCode != 200 {
-		fmt.Printf("HTTP error %d hitting: %s\n", resp.StatusCode, uri)
 		err = errors.New(fmt.Sprintf("An error with code %d was throw trying to get a response from: %s", resp.StatusCode, uri))
 		return "", err
 	}
