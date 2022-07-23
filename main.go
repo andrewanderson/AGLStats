@@ -69,15 +69,20 @@ const sheetWinColumnIndex = 2
 const sheetLossColumnIndex = 3
 const sheetLinkColumnIndex = 4
 const leagueEliminationLosses = 11
+const isSingletonLeague = true
 const deckStrengthCardsToConsider = 60
 
 // We want to track a stat for fun.  Here are some lists that we're using
 var bombList map[string]DeckSlot
-var bombSealedDeckId = fmt.Sprintf(sealedDeckApiUriTemplate, "PSYLhA4Tit") //Hdw62MnDDd
+var bombSealedDeckId = fmt.Sprintf(sealedDeckApiUriTemplate, "UWEl8i8M1R")
 var dudList map[string]DeckSlot
-var dudSealedDeckId = fmt.Sprintf(sealedDeckApiUriTemplate, "Ga4qDQMx6I")
+var dudSealedDeckId = fmt.Sprintf(sealedDeckApiUriTemplate, "NIenIp5K6D")
 var topCommonList map[string]DeckSlot
-var topCommonDeckId = fmt.Sprintf(sealedDeckApiUriTemplate, "fKAvpTdSeX")
+var topCommonDeckId = fmt.Sprintf(sealedDeckApiUriTemplate, "15xAsf8x53")
+// HBG-specific
+var topCommanderList map[string]DeckSlot
+var topCommanderDeckId = fmt.Sprintf(sealedDeckApiUriTemplate, "Qiso26itp4")
+
 
 // Perf data variables for deck strength calculations
 var mtg2CDecks = []string{"WU", "WB", "WR", "WG", "UB", "UR", "UG", "BR", "BG", "RG"}
@@ -446,12 +451,12 @@ func processFunFacts(db *badger.DB, pools []PlayerPool) {
 	checkError(err)
 	writer := bufio.NewWriter(outputFile)
 
-	writer.WriteString("Player,Team,IsAlive,Record,Bombs,Duds,TopCommons,W,U,B,R,G,Gold,Colourless,Cmc,NonBasicLand,Commanders,Playsets,UniqueCards,CostUSD,Strength\n")
+	writer.WriteString("Player,Team,IsAlive,Record,Bombs,Duds,TopCommons,W,U,B,R,G,Gold,Colourless,Cmc,NonBasicLand,Commanders,TopCommanders,Playsets,UniqueCards,CostUSD,Strength\n")
 	for _, p := range pools {
 		ff := p.facts
-		writer.WriteString(fmt.Sprintf("%s,%s,%t,%s,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d\n",
+		writer.WriteString(fmt.Sprintf("%s,%s,%t,%s,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d\n",
 			p.player, p.team, p.isAlive, p.record, ff["bombs"], ff["duds"], ff["topcommons"], ff["white"], ff["blue"], ff["black"], ff["red"], ff["green"], ff["gold"], ff["colourless"],
-			ff["cmc"], ff["nonbasicland"], ff["commanders"], ff["playsets"], ff["uniqueCards"], ff["costUSD"], ff["strength"]))
+			ff["cmc"], ff["nonbasicland"], ff["commanders"], ff["topCommanders"], ff["playsets"], ff["uniqueCards"], ff["costUSD"], ff["strength"]))
 	}
 	writer.Flush()
 }
@@ -465,6 +470,9 @@ func loadFunFactLists(db *badger.DB) {
 
 	// Top Commons
 	topCommonList = getCardsFromPool("TopCommons", topCommonDeckId).flatten()
+
+	// HBG-specific
+	topCommanderList = getCardsFromPool("TopCommanders", topCommanderDeckId).flatten()
 }
 
 func (pool *PlayerPool) addFacts(cardStrengthByDeck map[string]map[string]float64) {
@@ -489,56 +497,62 @@ func (pool *PlayerPool) addFacts(cardStrengthByDeck map[string]map[string]float6
 
 	// League-specific
 	var commanders = 0
+	var topCommanders = 0
 
 	// Drop the basic lands (and command towers) and gather facts about the cards in the pool.
 	for _, card := range pool.cards {
 		// Filter out the basic lands
 		if !card.isBasicLand() {
 
+			var copies = card.amount
+			if isSingletonLeague {
+				copies = 1
+			}
+
 			// We're working with a de-dup'd list, so increment here.
 			uniqueCards += 1
 
 			// Bombs
 			if isInCuratedSet(card.cardName, bombList) {
-				bombs += card.amount
+				bombs += copies
 			}
 
 			// Duds
 			if isInCuratedSet(card.cardName, dudList) {
-				duds += card.amount
+				duds += copies
 			}
 
 			// Top Commons
 			if isInCuratedSet(card.cardName, topCommonList) {
-				topCommons += card.amount
+				topCommons += copies
 			}
 
 			// Cards of each colour
 			if card.isColour("W", true) {
-				whiteCard += card.amount
+				whiteCard += copies
 			}
 			if card.isColour("U", true) {
-				blueCard += card.amount
+				blueCard += copies
 			}
 			if card.isColour("B", true) {
-				blackCard += card.amount
+				blackCard += copies
 			}
 			if card.isColour("R", true) {
-				redCard += card.amount
+				redCard += copies
 			}
 			if card.isColour("G", true) {
-				greenCard += card.amount
+				greenCard += copies
 			}
 			if card.isMultiColour() {
-				goldCard += card.amount
+				goldCard += copies
 			}
 			if card.isColourless() && !card.isCardType("Land") {
-				colourless += card.amount
+				colourless += copies
 			}
 
 			// Non-basics
 			if card.isCardType("Land") && !card.isBasicLand() {
-				nonBasicLand += card.amount
+				nonBasicLand += copies
 			}
 
 			// A playset (or more) of a card
@@ -556,6 +570,10 @@ func (pool *PlayerPool) addFacts(cardStrengthByDeck map[string]map[string]float6
 			// Commanders are legendary creatures
 			if card.isCardType("Legendary Creature") {
 				commanders += 1 // card.amount  (don't count multiples)
+			}
+			// OP commanders
+			if isInCuratedSet(card.cardName, topCommanderList) {
+				topCommanders += 1 // don't count multiples
 			}
 
 		}
@@ -578,6 +596,7 @@ func (pool *PlayerPool) addFacts(cardStrengthByDeck map[string]map[string]float6
 	pool.facts["cmc"] = int(math.Round(cmc))
 	pool.facts["nonbasicland"] = nonBasicLand
 	pool.facts["commanders"] = commanders
+	pool.facts["topCommanders"] = topCommanders
 	pool.facts["playsets"] = playsets
 	pool.facts["uniqueCards"] = uniqueCards
 	pool.facts["costUSD"] = int(math.Round(costUSD))
@@ -604,8 +623,12 @@ func (pool *PlayerPool) calculateStrength(cardStrengthByDeck map[string]map[stri
 		var cardStrengths = make([]CardStrength, 0)
 		for _, c := range pool.cards {
 			strength, ok := strengthMap[c.cardName]
-			// one entry per copy
-			for i := 0; i < c.amount; i++ {
+			// one entry per copy (unless singleton)
+			var copies = c.amount
+			if isSingletonLeague {
+				copies = 1
+			}
+			for i := 0; i < copies; i++ {
 				if ok {
 					cardStrengths = append(cardStrengths, CardStrength{c.cardName, strength})
 				} else { // didn't find the card.... just give it a 0 (TODO: in the future maybe this triggers a 17lands load)
