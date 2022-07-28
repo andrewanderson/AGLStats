@@ -54,7 +54,6 @@ const seventeenLandsTemplate string = "https://www.17lands.com/card_ratings/data
 const seventeenLandsPauseMs = 1000
 const seventeenLandsDrawnThreshold = 100 // 1000 is a typical base.  Will be modified for rarity
 const webRetires int = 3
-const webRetryMs = 500
 
 const dbPath = "D:\\Code\\PoolParser\\db"
 const outputPath = "D:\\Code\\PoolParser\\out"
@@ -196,7 +195,7 @@ func populatePools(db *badger.DB, pools []PlayerPool) {
 // Connect to SealedDeck.tech and grab the card list for a given pool
 func getCardsFromPool(name string, uri string) *SealedDeck {
 	fmt.Printf("Fetching pool for %s from: %s\n", name, uri)
-	rawJson, err := getWebResponseString(uri)
+	rawJson, err := getWebResponseString(uri, sealedDeckPauseMs)
 	checkError(err)
 
 	// Convert the json to our deck struct
@@ -219,7 +218,7 @@ func (pool *PlayerPool) fetchCardData(db *badger.DB, deck *SealedDeck) {
 	for _, card := range allCards {
 		resultCard, err := getCard(db, card.cardName)
 		checkError(err)
-		pool.cards = append(pool.cards, DeckSlot{amount: card.amount, cardName: card.cardName, card: resultCard})
+		pool.cards = append(pool.cards, DeckSlot{amount: card.amount, cardName: resultCard.Name, card: resultCard}) // use the result card name due to casing problems in sealeddeck.tech
 
 		if !leagueIsMonoSet {
 			setsInPools[strings.ToUpper(resultCard.Set)] = 1
@@ -301,9 +300,10 @@ func getCard(db *badger.DB, cardName string) (resultCard *ScryfallCard, err erro
 	cardJson := ""
 	card := new(ScryfallCard)
 
-	// Remove the Alchemy designation from cards
-	if strings.HasPrefix(cardName, "A-") {
-		cardName = strings.Trim(cardName, "A-")
+	// Force all card names to lower case (for some sealeddeck oddities) and then remove the Alchemy designation from cards
+	cardName = strings.ToLower(cardName)
+	if strings.HasPrefix(cardName, "a-") {
+		cardName = strings.Trim(cardName, "a-")
 	}
 
 	// First try to get the card from the database
@@ -334,11 +334,12 @@ func scryfallGet(cardName string) (resultJson string, err error) {
 	var setUri string = baseUri + fmt.Sprintf(scryfallSetClauseTemplate, url.QueryEscape(currentSet))
 
 	var rawJson string = ""
-	rawJson, err = getWebResponseString(setUri)
+	rawJson, err = getWebResponseString(setUri, scryfallPauseMs)
 	if err != nil {
-		rawJson, err = getWebResponseString(baseUri)
-	} else {
-		fmt.Println(err)
+		rawJson, err = getWebResponseString(baseUri, scryfallPauseMs)
+		if err != nil {
+			fmt.Println("Error fetching card from scryfall: ", err)
+		}
 	}
 
 	// And then wait for a few ms to be a good citizen
@@ -423,9 +424,9 @@ func seventeenLandsGet(setCode string, deckId string) (resultJson string, err er
 	var todayString = fmt.Sprintf("%d-%d-%d", time.Now().Year(), time.Now().Month(), time.Now().Day())
 	var uri string = fmt.Sprintf(seventeenLandsTemplate, setCode, setPerformanceFormat, todayString, deckId)
 	//var uri string = fmt.Sprintf(seventeenLandsTemplate, setCode, deckId)
-	rawJson, err := getWebResponseString(uri)
+	rawJson, err := getWebResponseString(uri, seventeenLandsPauseMs)
 	if err != nil {
-		fmt.Println(err)
+		fmt.Println("Error getting 17lands data: ", err)
 	}
 
 	// And then wait for a few ms to be a good citizen
@@ -862,7 +863,7 @@ func dbSet(db *badger.DB, key, value string) error {
 
 // Helper method that takes a Uri and spits out the response as a string
 // Retries a few times if an error is hit
-func getWebResponseString(uri string) (rawResult string, err error) {
+func getWebResponseString(uri string, retryMs int) (rawResult string, err error) {
 
 	// Try to hit the uri, and retry if an error code comes back.
 	for i := 0; i < webRetires; i++ {
@@ -873,7 +874,7 @@ func getWebResponseString(uri string) (rawResult string, err error) {
 		}
 
 		// Something happened - take a nap, and then iterate
-		time.Sleep(webRetryMs * time.Millisecond)
+		time.Sleep(time.Duration(retryMs) * time.Millisecond)
 	}
 
 	// If we got this far we were unsuccessful.  Return the final error
